@@ -1643,8 +1643,8 @@
 // ============================================================
 // KONFIGURATION – hier deine Supabase-Daten eintragen
 // ============================================================
-const SUPABASE_URL  = 'https://okgvubkibtkgcofkdpsd.supabase.co';       // z.B. https://xxx.supabase.co
-const SUPABASE_KEY  = 'sb_publishable_Oig3shBE-NmIFU_Q4dJ2Ig_wa_1yd4W';   // langer öffentlicher Key
+const SUPABASE_URL  = 'https://okgvubkibtkgcofkdpsd.supabase.co';
+const SUPABASE_KEY  = 'sb_publishable_Oig3shBE-NmIFU_Q4dJ2Ig_wa_1yd4W';
 // ============================================================
 
 const { createClient } = supabase;
@@ -1665,6 +1665,7 @@ window.addEventListener('load', async () => {
     db = createClient(SUPABASE_URL, SUPABASE_KEY);
     // Quick connectivity test
     const { error } = await db.from('poker_sessions').select('id').limit(1);
+    console.log('Supabase connect error:', error);
     if (error) throw error;
 
     setStatus('connected', 'VERBUNDEN');
@@ -1675,9 +1676,10 @@ window.addEventListener('load', async () => {
     loadTournaments();
     setupRealtime();
   } catch(e) {
+    console.error('Init failed:', e);
     isOfflineMode = true;
     setStatus('disconnected', 'OFFLINE (Lokal)');
-    showToast('⚠ Supabase nicht konfiguriert – Lokaler Modus');
+    showToast('⚠ Fehler: ' + (e.message || String(e)));
     // Load from localStorage if available, else demo data
     const stored = localStorage.getItem('poker_sessions_local');
     sessions = stored ? JSON.parse(stored) : getDemoData();
@@ -1983,6 +1985,11 @@ function renderSessions() {
       </div>
       <div class="session-detail-panel" id="night-${i}">
         <div class="session-detail-inner">
+          <button onclick="event.stopPropagation();openSettlement('${date}')"
+            style="margin-bottom:14px;width:100%;background:linear-gradient(135deg,rgba(201,168,76,0.18),rgba(201,168,76,0.08));color:var(--gold-light);border:1px solid rgba(201,168,76,0.4);border-radius:8px;padding:11px;font-family:'Cinzel',serif;font-size:0.72rem;letter-spacing:0.1em;cursor:pointer;transition:all 0.15s;display:flex;align-items:center;justify-content:center;gap:8px"
+            onmouseover="this.style.background='linear-gradient(135deg,rgba(201,168,76,0.3),rgba(201,168,76,0.15))'" onmouseout="this.style.background='linear-gradient(135deg,rgba(201,168,76,0.18),rgba(201,168,76,0.08))'">
+            ♠ &nbsp;SCHULDENAUSGLEICH BERECHNEN
+          </button>
           <div class="font-display text-xs mb-3" style="color:var(--gold);letter-spacing:0.12em">SPIELER DIESER NACHT</div>
           ${playerRows}
           <div class="pot-summary">
@@ -2012,11 +2019,6 @@ function renderSessions() {
               <input type="file" accept="image/*" style="display:none" onchange="handlePhotoUpload(event,'${date}')">
             </label>
           </div>
-          <button onclick="event.stopPropagation();openSettlement('${date}')"
-            style="margin-top:12px;width:100%;background:linear-gradient(135deg,rgba(201,168,76,0.18),rgba(201,168,76,0.08));color:var(--gold-light);border:1px solid rgba(201,168,76,0.4);border-radius:8px;padding:11px;font-family:'Cinzel',serif;font-size:0.72rem;letter-spacing:0.1em;cursor:pointer;transition:all 0.15s;display:flex;align-items:center;justify-content:center;gap:8px"
-            onmouseover="this.style.background='linear-gradient(135deg,rgba(201,168,76,0.3),rgba(201,168,76,0.15))'" onmouseout="this.style.background='linear-gradient(135deg,rgba(201,168,76,0.18),rgba(201,168,76,0.08))'">
-            ♠ &nbsp;SCHULDENAUSGLEICH BERECHNEN
-          </button>
           <button onclick="event.stopPropagation();deleteNight('${date}')"
             style="margin-top:8px;width:100%;background:rgba(192,57,43,0.12);color:#e74c3c;border:1px solid rgba(192,57,43,0.35);border-radius:8px;padding:9px;font-family:'Cinzel',serif;font-size:0.7rem;letter-spacing:0.1em;cursor:pointer;transition:all 0.15s;"
             onmouseover="this.style.background='rgba(192,57,43,0.28)'" onmouseout="this.style.background='rgba(192,57,43,0.12)'">
@@ -2511,6 +2513,7 @@ async function loadAvatars() {
     }
     // Re-render leaderboard with avatars
     renderLeaderboard();
+    renderSessions();
   } catch(e) { console.warn('Avatar load error:', e); }
 }
 
@@ -2770,36 +2773,52 @@ function drawChart() {
 }
 
 function drawCumulativeChart() {
-  const filtered = getSessionsForYear(chartYear);
-  if (!filtered.length) { if (chartInstance) { chartInstance.destroy(); chartInstance = null; } return; }
-  const allPlayers = [...new Set(filtered.map(s => s.player_name))];
-  const activePlayers = getChartSelectedPlayers().filter(p => allPlayers.includes(p));
-  const sortedByDate = [...filtered].sort((a,b) => a.date.localeCompare(b.date));
-  const allDates = [...new Set(sortedByDate.map(s => s.date))].sort();
+  // Use ALL sessions for cumulative (not just filtered year) so the chart
+  // shows the true running total; but group by month for readability.
+  const sourceData = chartYear === 'all' ? sessions : getSessionsForYear(chartYear);
+  if (!sourceData.length) { if (chartInstance) { chartInstance.destroy(); chartInstance = null; } return; }
+
+  const allPlayers     = [...new Set(sourceData.map(s => s.player_name))];
+  const activePlayers  = getChartSelectedPlayers().filter(p => allPlayers.includes(p));
   const allTimePlayers = [...new Set(sessions.map(s => s.player_name))];
+  const sortedByDate   = [...sourceData].sort((a,b) => a.date.localeCompare(b.date));
+
+  // Build sorted list of unique YYYY-MM months
+  const allMonths = [...new Set(sortedByDate.map(s => s.date.slice(0,7)))].sort();
+
+  // Month label: "Jan 25"
+  const monthNames = ['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
+  const monthLabel = m => {
+    const [y, mo] = m.split('-');
+    return monthNames[parseInt(mo,10)-1] + ' '' + y.slice(2);
+  };
 
   const datasets = activePlayers.map((player) => {
     const colorIdx = allTimePlayers.indexOf(player);
     const color = COLORS[colorIdx % COLORS.length];
     let cumulative = 0;
-    const data = allDates.map(date => {
-      sortedByDate.filter(s => s.player_name === player && s.date === date)
+    const data = allMonths.map(month => {
+      sortedByDate
+        .filter(s => s.player_name === player && s.date.slice(0,7) === month)
         .forEach(s => cumulative += (s.cash_out - s.buy_in));
-      return cumulative;
+      return Math.round(cumulative * 100) / 100;
     });
+    // Only include players who have at least one session in this period
+    const hasData = data.some((v,i) => i === 0 ? v !== 0 : v !== data[i-1]);
+    if (!hasData) return null;
     return {
       label: player, data,
       borderColor: color, backgroundColor: color + '22',
       borderWidth: 2.5, pointBackgroundColor: color,
-      pointRadius: 5, pointHoverRadius: 8, tension: 0.4, fill: false
+      pointRadius: 5, pointHoverRadius: 8, tension: 0.3, fill: false
     };
-  });
+  }).filter(Boolean);
 
   if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
   const ctx = document.getElementById('profitChart').getContext('2d');
   chartInstance = new Chart(ctx, {
     type: 'line',
-    data: { labels: allDates.map(formatDate), datasets },
+    data: { labels: allMonths.map(monthLabel), datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
@@ -2812,7 +2831,7 @@ function drawCumulativeChart() {
         }
       },
       scales: {
-        x: { ticks: { color: '#8A8070', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        x: { ticks: { color: '#8A8070', font: { size: 10 }, maxRotation: 45 }, grid: { color: 'rgba(255,255,255,0.05)' } },
         y: { ticks: { color: '#8A8070', font: { size: 10 }, callback: v => v.toFixed(0) + ' €' }, grid: { color: 'rgba(255,255,255,0.05)' }, border: { dash: [4,4] } }
       }
     }
